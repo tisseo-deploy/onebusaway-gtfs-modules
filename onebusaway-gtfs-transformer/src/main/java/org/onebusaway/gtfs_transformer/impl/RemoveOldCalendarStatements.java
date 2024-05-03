@@ -20,10 +20,14 @@ import java.util.Set;
 
 import org.onebusaway.csv_entities.schema.annotations.CsvField;
 import org.onebusaway.gtfs.model.ServiceCalendar;
+import org.onebusaway.gtfs.model.ServiceCalendarDate;
 import org.onebusaway.gtfs.services.GtfsMutableRelationalDao;
 import org.onebusaway.gtfs_transformer.services.GtfsTransformStrategy;
 import org.onebusaway.gtfs_transformer.services.TransformContext;
 import org.onebusaway.gtfs_transformer.util.CalendarFunctions;
+
+import java.util.HashSet;
+import java.util.Set;
 
 /**
  * Remove calendar dates that are past.
@@ -63,6 +67,17 @@ public class RemoveOldCalendarStatements implements GtfsTransformStrategy {
         }
         for (ServiceCalendar serviceCalendar : serviceCalendarsToRemove) {
             removeEntityLibrary.removeCalendar(gtfsMutableRelationalDao, serviceCalendar.getServiceId());
+        }
+
+        Set<ServiceCalendarDate> serviceCalendarDatesToRemove = new HashSet<ServiceCalendarDate>();
+        for (ServiceCalendarDate calendarDate : gtfsMutableRelationalDao.getAllCalendarDates()) {
+            if (calendarDate.getDate().getAsDate().before(today)) {
+                serviceCalendarDatesToRemove.add(calendarDate);
+            }
+        }
+        for (ServiceCalendarDate serviceCalendarDate : serviceCalendarDatesToRemove) {
+            // here we can't delete the trips as the serviceid may be active elsewhere
+            removeEntityLibrary.removeServiceCalendarDate(gtfsMutableRelationalDao, serviceCalendarDate);
         }
     }
 }
