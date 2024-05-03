@@ -20,15 +20,12 @@ import org.onebusaway.gtfs.model.ServiceCalendarDate;
 import org.onebusaway.gtfs.services.GtfsMutableRelationalDao;
 import org.onebusaway.gtfs_transformer.services.GtfsTransformStrategy;
 import org.onebusaway.gtfs_transformer.services.TransformContext;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
 
 import java.util.HashSet;
 import java.util.Set;
 
 public class RemoveOldCalendarStatements implements GtfsTransformStrategy {
 
-    private final Logger _log = LoggerFactory.getLogger(RemoveOldCalendarStatements.class);
     @Override
     public String getName() {
         return this.getClass().getSimpleName();
@@ -40,8 +37,8 @@ public class RemoveOldCalendarStatements implements GtfsTransformStrategy {
         Set<ServiceCalendar> serviceCalendarsToRemove = new HashSet<ServiceCalendar>();
         java.util.Date today = new java.util.Date();
 
-        for (ServiceCalendar calendar: gtfsMutableRelationalDao.getAllCalendars()) {
-            if (calendar.getEndDate().getAsDate().before(today)){
+        for (ServiceCalendar calendar : gtfsMutableRelationalDao.getAllCalendars()) {
+            if (calendar.getEndDate().getAsDate().before(today)) {
                 serviceCalendarsToRemove.add(calendar);
             }
         }
