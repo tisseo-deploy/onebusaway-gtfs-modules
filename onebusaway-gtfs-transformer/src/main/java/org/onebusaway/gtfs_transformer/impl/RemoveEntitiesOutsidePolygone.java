@@ -1,3 +1,18 @@
+/**
+ * Copyright (C) 2024 Tisseo Voyageurs.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *         http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 package org.onebusaway.gtfs_transformer.impl;
 
 import java.util.ArrayList;
@@ -7,29 +22,36 @@ import java.util.Map;
 
 import org.locationtech.jts.io.ParseException;
 import org.locationtech.jts.io.WKTReader;
-import org.json.JSONException;
-import org.json.JSONObject;
 import org.locationtech.jts.geom.*;
 
-import org.json.JSONObject;
+import org.onebusaway.collections.beans.PropertyPathExpression;
 import org.onebusaway.csv_entities.schema.annotations.CsvField;
 import org.onebusaway.gtfs.model.Stop;
-import org.onebusaway.gtfs.model.StopLocation;
 import org.onebusaway.gtfs.model.StopTime;
 import org.onebusaway.gtfs.model.Trip;
-import org.onebusaway.gtfs.serialization.GtfsEntitySchemaFactory;
 import org.onebusaway.gtfs.services.GtfsMutableRelationalDao;
-import org.onebusaway.gtfs_transformer.factory.EntityRetentionGraph;
 import org.onebusaway.gtfs_transformer.services.GtfsTransformStrategy;
 import org.onebusaway.gtfs_transformer.services.TransformContext;
+import org.onebusaway.gtfs_transformer.updates.TrimTripTransformStrategy;
+import org.onebusaway.gtfs_transformer.updates.TrimTripTransformStrategy.TrimOperation;
+import org.onebusaway.gtfs_transformer.match.PropertyValueEntityMatch;
+import org.onebusaway.gtfs_transformer.match.SimpleValueMatcher;
+import org.onebusaway.gtfs_transformer.match.TypedEntityMatch;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-
+/*
+ * remove entities outside polygone geometry
+ *      remove procedre is based on the trim_trip strategy
+ *      providing the trip_id key and the parameters from_stop_id/to_stop_id
+ * example: 
+ *      {"op":"transform","class":"org.onebusaway.gtfs_transformer.impl.RemoveEntitiesOutsidePolygone","polygone": wkt_polygone ...}
+ */
 
 public class RemoveEntitiesOutsidePolygone implements GtfsTransformStrategy {
-    private final Logger log = LoggerFactory.getLogger(RemoveEntitiesOutsidePolygone.class);
+    private final Logger _log = LoggerFactory.getLogger(RemoveEntitiesOutsidePolygone.class);
 
+    // retrieves string polygone from config file
     @CsvField(optional = true)
     private String polygone;
 
@@ -44,73 +66,86 @@ public class RemoveEntitiesOutsidePolygone implements GtfsTransformStrategy {
 
      @Override
     public void run(TransformContext transformContext, GtfsMutableRelationalDao gtfsMutableRelationalDao) {
+        
         Geometry geometry = buildPolygone(polygone);
-        // ArrayList<Stop> stopsToRemove = new ArrayList<>();
-        // ArrayList<StopTime> stopTimesToRemove = new ArrayList<>();
-        // ArrayList<Trip> tripsToRemove = new ArrayList<>();
-        // RemoveEntityLibrary removeEntityLibrary = new RemoveEntityLibrary();
-        // HashMap<String, StopTime> referenceStopTimes = new HashMap<>();
-        // browse all stops and retain only those inside polygone/multiPolygone
+        TrimTripTransformStrategy strategy = new TrimTripTransformStrategy();
+        TransformContext context = new TransformContext();
         Map<Object, List<Object>> tripsWithStopsOutsidePolygone = new HashMap<>();
 
-        Integer iterationST = 0;
-        // loop all trips
+         // browse all trips
         for (Trip trip : gtfsMutableRelationalDao.getAllTrips()){
-            if (trip.getId().getId().equals("OCESN55594R3128108:2024-05-08T00:33:19Z"))
-                log.info("route : Toulouse - Guzet "+trip.getId());
             for (StopTime stopTime: gtfsMutableRelationalDao.getStopTimesForTrip(trip)){
+                
                 Stop stop = gtfsMutableRelationalDao.getStopForId(stopTime.getStop().getId());
                 if (! insidePolygon(geometry,stop.getLon(),stop.getLat())){
                     List<Object> stopsWithSequence = new ArrayList<>();
-                    stopsWithSequence.add(new Object[] {stopTime.getStopSequence(), stop.getId().getId()});
-                    updateDict(tripsWithStopsOutsidePolygone,trip.getId().getId(),stopsWithSequence);
-                    iterationST+=1;
+                    Integer totalStopTimes = gtfsMutableRelationalDao.getStopTimesForTrip(trip).size();
+                    // append in List <stopTime_sequence_number,stopId,totalStopTimes>
+                    stopsWithSequence.add(new Object[] {stopTime.getStopSequence(), stop.getId().getId(),totalStopTimes});
+                    // update dictionary if stop is outside polygone
+                    updateDict(tripsWithStopsOutsidePolygone,trip.getId(),stopsWithSequence);
                 }
             }
         }
+        // browse Map <tripsWithStopsOutsidePolygone>
         for (Map.Entry<Object,List<Object>> entry:  tripsWithStopsOutsidePolygone.entrySet()){
+            
+            TrimOperation operation = new TrimOperation();
+
+            Boolean trimFrom = false;
+            Boolean trimTo = false;
+            Integer indexFromStopId = 0;
+            Integer indexToStopId = 0;
+            Integer allStopTimes = 0;
+            String fromStopId = null; 
+            String toStopId = null;
             Object firstObject = entry.getValue().get(0);
-            Object[] firstArray = (Object[]) firstObject;
-            String fromStopId = (String) firstArray[1]; // get from stop id
-            String toStopId = null; // get to stop id
-             // Process the last object if there is more than one object in the list
-             if (entry.getValue().size() > 1) {
+            Object[] firstStop = (Object[]) firstObject;
+            Object[] lastStop = null;
+
+            // get from stop id : fromStopId value, indexFromStopId
+            if (firstStop.length > 0){
+                fromStopId = (String) firstStop[1]; // get fromStopId
+                indexFromStopId = (Integer) firstStop[0];
+                allStopTimes = (Integer) firstStop[2] - 1;
+            }
+          
+            // get to stop id : toStopId value, indexToStopIds
+            if (entry.getValue().size() > 1) {
                 Object lastObject = entry.getValue().get(entry.getValue().size() - 1);
-                Object[] lastArray = (Object[]) lastObject;
-                toStopId = (String) lastArray[1];
-            }
-            // call trim trip operation
-            String line = "{\"op\":\"trim_trip\", \"match\":{\"file\":\"trips.txt\", \"trip_id\":\""+entry.getKey()+"\"},\"from_stop_id\":\""+fromStopId+"\"}";
-            try {
-                 JSONObject json = new JSONObject(line);
-            } catch (JSONException e) {
-                e.printStackTrace();
+                lastStop = (Object[]) lastObject;
+                toStopId = (String) lastStop[1];
+                indexToStopId = (Integer) lastStop[0];
             }
 
+            // check whether trimFrom or trimTo is used in the trim operation 
+            if (indexFromStopId != null && indexFromStopId > 0){
+                trimFrom = true;
+            }
+            else if (indexToStopId > 0 && indexToStopId < allStopTimes){
+                trimTo = true;
+            }
+            // operation object to used it int trim trip strategy
+            PropertyPathExpression expression = new PropertyPathExpression("id");
+            operation.setMatch(new TypedEntityMatch(Trip.class,
+            new PropertyValueEntityMatch(expression,
+            new SimpleValueMatcher(entry.getKey()))));
+            
+            if (Boolean.TRUE.equals(trimFrom))
+                operation.setFromStopId(fromStopId);
+            if (Boolean.TRUE.equals(trimTo))
+                operation.setToStopId(toStopId);
+            
+            // add operation + execute strategy
+            strategy.addOperation(operation);
+            strategy.run(context, gtfsMutableRelationalDao);
         }
-        log.info("tripswithStop outside polygone "+tripsWithStopsOutsidePolygone.size(),Integer.toString(iterationST));
-        //
-        // if (geometry.isValid() && !geometry.isEmpty()){
-        //     for (Stop stop : gtfsMutableRelationalDao.getAllStops()) {
-        //         if (! insidePolygon(geometry,stop.getLon(),stop.getLat())){
-        //             for (StopTime stopTime : gtfsMutableRelationalDao.getStopTimesForStop(stop)){
-        //                 log.info("stop "+stop.getId()+ " trip id : "+stopTime.getTrip().getId().getId());
-        //                 tripsOutsidePolygoneDict.put(stopTime.getTrip().getId().getId()+";"+stop.getId(),stopTime.getTrip().getRoute().getShortName() + ";"+stopTime.getTrip().getRoute().getLongName());
-        //                 if (!tripsToRemove.contains(stopTime.getTrip()))
-        //                     tripsToRemove.add(stopTime.getTrip());
-        //                 if (!stopTimesToRemove.contains(stopTime))
-        //                     stopTimesToRemove.add(stopTime);
-        //                 if (!stopsToRemove.contains(stop))
-        //                     stopsToRemove.add(stop);
-        //             }
-        //         }
-        //     }
-        // }
+    }  
 
-
-    }   
-      // Method to update the dictionary with multiple values for a key
-      private static void updateDict(Map<Object, List<Object>> dictionary, String key, List<Object> values) {
+    /*
+     *  updateDict : function used to add/update dictionary
+     */
+    private static void updateDict(Map<Object, List<Object>> dictionary, Object key, List<Object> values) {
         // If the key already exists, append the values to its existing list
         if (dictionary.containsKey(key)) {
             List<Object> existingValues = dictionary.get(key);
@@ -123,7 +158,7 @@ public class RemoveEntitiesOutsidePolygone implements GtfsTransformStrategy {
     }
     
     /*
-     * create polygone/multiPolygone from 'polygone' variable in json file
+     * create polygone/multiPolygone from polygone variable in json file
         * return Geometry variable
         * return null if an exception is encountered when parsing the wkt string
      */
@@ -133,7 +168,7 @@ public class RemoveEntitiesOutsidePolygone implements GtfsTransformStrategy {
             return  reader.read(wktPolygone);
         } catch (ParseException e){
             String message = String.format("Error parsing WKT string : %s", e.getMessage());
-            log.error(message);
+            _log.error(message);
             return null;
         }
         
